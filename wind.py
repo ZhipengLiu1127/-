@@ -29,9 +29,13 @@ def wind_resistance(u,v,heading,V,mode_input,B,D):
     At=0.6*B*D #经验公式
 
     ship_speed = V
+    #print(f"ship_speed: {ship_speed}")
     # 计算风速和风向
     true_wind_speed = math.sqrt(u**2 + v**2)
+    #print(f"true_wind_speed: {true_wind_speed}")
+
     true_wind_direction = (180 + math.degrees(math.atan2(-u, -v))) % 360  # 调整到 0–360 范围
+    #print(f"true_wind_direction: {true_wind_direction}")
     # 计算相对风向角
     relative_wind_angle = true_wind_direction - heading
     if relative_wind_angle < 0:
@@ -41,10 +45,12 @@ def wind_resistance(u,v,heading,V,mode_input,B,D):
 
     # 将相对风向角调整到 0–180（对称性）
     relative_wind_angle = min(relative_wind_angle, 360 - relative_wind_angle)
+    #print(f"relative_wind_angle: {relative_wind_angle}")
 
     # 计算相对风速（使用矢量合成法）
     Vw = math.sqrt(true_wind_speed**2 + ship_speed**2 - 2 * true_wind_speed * ship_speed * math.cos(math.radians(relative_wind_angle)))
-    
+    #print(f"Vw: {Vw}")
+
     # 查找风阻系数
     angle_list = wind_resistance_data["Angle of attack [°]"]
     coefficients = wind_resistance_data[mode_input]
@@ -59,5 +65,6 @@ def wind_resistance(u,v,heading,V,mode_input,B,D):
                 Cw = y0 + (y1 - y0) * (relative_wind_angle - x0) / (x1 - x0)
                 break
 
-    Rw = 0.5*Cw*At*p*Vw**2
+    Rw = (0.5*Cw*At*p*Vw**2)
+    print(f"Rw: {Rw}")
     return Rw

@@ -2,8 +2,7 @@ import numpy as np
 import math 
 import scipy.integrate as integrate
 
-
-def calculate_clame_resistance(Lpp,B,D,V):
+def calculate_clame_resistance(Lpp,B,D,V,C_B):
     """
     依据弗汝德假设计算船舶静水阻力
     C1： C1为摩擦力阻力系数
@@ -30,23 +29,33 @@ def calculate_clame_resistance(Lpp,B,D,V):
     #常数
     v = 1.1 * 10**(-6)  #理想海域海水运动粘度 单位:m²/s
     Re =(V*Lpp)/v  #雷诺数
-    S =1.8*Lpp*B*D   #船舶湿表面
+    #print(f"Re: {Re}")
+    S =Lpp*D*(2+1.37*(C_B-0.274)*B/D)   #船舶湿表面
+    #print(f"S: {S}")
     Ks = 0.0002  #粗糙度表现高度
     
-    rho_s = 1.03  # 海水密度 (kg/m^3)
+    rho_s = 1050  # 海水密度 (kg/m^3)
+
+    #print(f"V: {V}")
 
     #......................................计算阻力系数...........................................#
     
     C1 = 0.4631/((np.log10(Re))**2.6)  #计算摩擦力阻力系数
-    C2 = 0.044*((Ks/Lpp)**(1/3)-10*Re**(-1/3))+0.000125  # Townsin公式计算粗糙度补贴系数
+    #print(f"C1: {C1}")
+    C2 = 0.044*((Ks/Lpp)**(1./3.)-10*Re**(-1./3.))+0.000125  # Townsin公式计算粗糙度补贴系数
+    #print(f"C2: {C2}")
     C3 = 0.075/((np.log10(Re)-2)**2)    #ITTC-1957计算剩余阻力
+    #print(f"C3: {C3}")
 
     #............................计算平板摩擦力.......................................................#
-    R1 = (C1+C2)*0.5*S*rho_s*V**2
+    R1 = 0.5*(C1+C2)*S*rho_s*V**2
+    #print(f"R1: {R1}")
 
     #............................计算剩余阻力（ITTC-1957标准）........................................#
     R2 = C3*rho_s*(V*Lpp)**2
+    #print(f"R2: {R2}")
     
-    R = R1+R2
+    R_calme = (R1+R2)
+    #print(f"R_calme: {R_calme}")
 
-    return R
+    return R_calme

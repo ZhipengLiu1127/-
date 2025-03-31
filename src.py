@@ -1,164 +1,113 @@
-import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from netCDF4 import Dataset
-from scipy.interpolate import griddata
+import numpy as np
 from calme_water import calculate_clame_resistance
+from DPM import propeller
 from wind import wind_resistance
-from wave import wave_resistance
-from datetime import datetime
+from irregular_wave import wave_resistance_spectrum
+import matplotlib.pyplot as plt
+#from scipy.interpolate import PchipInterpolator
 
-# 1. 创建WGS84网格
-def create_wgs84_grid(lon_min, lon_max, lat_min, lat_max, resolution):
-    """
-    创建WGS84网格，指定经纬度范围和分辨率
-    """
-    lon_grid = np.arange(lon_min, lon_max, resolution)
-    lat_grid = np.arange(lat_min, lat_max, resolution)
-    lon_grid, lat_grid = np.meshgrid(lon_grid, lat_grid)
-    return lon_grid, lat_grid
+# 读取数据文件
+file_path = r"C:\Users\15585\Desktop\小论文写作素材\船舶失速航线优化\matched_data_3.csv"  # 请修改为实际的文件路径
+data = pd.read_csv(file_path)
 
-# 读取风浪数据
-def read_wind_wave_data(wind_file, wave_file, lat, lon, time_range):
-    """
-    从NC文件中读取风和波浪数据
-    wind_file: ERA5风速数据文件
-    wave_file: 波浪数据文件
-    lat: 船舶的纬度
-    lon: 船舶的经度
-    time_range: 时间范围，格式为 [start_time, end_time]，时间格式为字符串
-    """
-    # 打开wind数据和wave数据
-    wind_data = Dataset(wind_file, 'r')
-    wave_data = Dataset(wave_file, 'r')
-    
-    # 读取时间信息
-    times = pd.to_datetime(wind_data.variables['time'][:], unit='hours', origin=pd.Timestamp('1970-01-01'))
-    
-    # 筛选指定时间范围的数据
-    time_mask = (times >= pd.to_datetime(time_range[0])) & (times <= pd.to_datetime(time_range[1]))
-    
-    # 纬度、经度坐标和风速
-    lats = wind_data.variables['latitude'][:]
-    lons = wind_data.variables['longitude'][:]
-    
-    # 找到最近的经纬度点
-    lat_idx = np.argmin(np.abs(lats - lat))
-    lon_idx = np.argmin(np.abs(lons - lon))
-    
-    # 提取指定经纬度和时间范围的风速和波浪数据
-    u_wind = wind_data.variables['u10'][time_mask, lat_idx, lon_idx]
-    v_wind = wind_data.variables['v10'][time_mask, lat_idx, lon_idx]
-    wave_height = wave_data.variables['wave_height'][time_mask, lat_idx, lon_idx]
-    wave_period = wave_data.variables['wave_period'][time_mask, lat_idx, lon_idx]
-    
-    return u_wind, v_wind, wave_height, wave_period, times[time_mask]
 
-# 3. 读取船舶航迹数据
-def read_ship_route(route_file):
-    """
-    读取船舶的航迹数据
-    """
-    route_data = pd.read_csv(route_file)
-    route_data['datetime'] = pd.to_datetime(route_data['datetime'])
-    return route_data
+# matplotlib字体设置，解决中文显示问题
+plt.rcParams['font.family'] = 'Microsoft YaHei'  # 使用微软雅黑字体
+plt.rcParams['axes.unicode_minus'] = False  # 解决坐标轴负数的负号显示问题
 
-# 4. 根据时间和经纬度提取风浪数据
-def extract_wind_wave_for_time(lon, lat, wind_speed, wave_height, wave_period, times, query_time, lon_grid, lat_grid):
-    """
-    根据指定时间和经纬度提取风浪数据，并插值到网格位置
-    """
-    # 找到对应时间的风浪数据索引
-    time_idx = np.abs(times - query_time).argmin()  # 找到与查询时间最接近的索引
+# 假设已经有输入参数
+D_P = 5.25  # 螺旋桨直径
+mode_input = "Heavy Ballast, Cranes"  # 载重状态
+DWT = 28280  # 载重吨，单位为t
+B = 27.2  # 型宽
+T = 9.82  # 吃水深度
+Lpp = 160.4  # 两柱间长
+Cp = 0.78  # 菱形系数
+C_B = 0.77 #方形系数
+g = 9.8  # 重力加速度 (m/s^2)
 
-    # 提取对应时间的风速、波高和波周期
-    wind_speed_time = wind_speed[time_idx]
-    wave_height_time = wave_height[time_idx]
-    wave_period_time = wave_period[time_idx]
-    
-    # 插值到目标网格位置
-    wind_speed_grid = griddata((lon, lat), wind_speed_time, (lon_grid, lat_grid), method='linear')
-    wave_height_grid = griddata((lon, lat), wave_height_time, (lon_grid, lat_grid), method='linear')
-    wave_period_grid = griddata((lon, lat), wave_period_time, (lon_grid, lat_grid), method='linear')
-    
-    return wind_speed_grid, wave_height_grid, wave_period_grid
+def process_data(row, DWT, B, T, Lpp, Cp, D_P, mode_input,C_B):
+    # 检查输入的参数是否有空值
+    if row['speed'] is None or row['wind_u'] is None or row['wind_v'] is None or row['heading'] is None:
+        raise ValueError("输入的CSV数据缺少必要的列（如speed, wind_u, wind_v, heading）")
 
-# 5. 计算船舶失速率
-def calculate_stall_rate(route_data, lon_grid, lat_grid, wind_speed_grid, wave_height_grid, wave_period_grid):
-    stall_rates = []
-    
-    # 遍历航迹数据，计算每个位置的失速率
-    for index, row in route_data.iterrows():
-        latitude = row['latitude']
-        longitude = row['longitude']
-        heading = row['heading']
-        speed = row['speed']
-        timestamp = row['datetime']
-        
-        # 计算船舶在该位置对应的网格单元
-        grid_x = np.abs(lon_grid[0, :] - longitude).argmin()
-        grid_y = np.abs(lat_grid[:, 0] - latitude).argmin()
-        
-        # 获取该网格单元的风浪数据
-        wind_speed = wind_speed_grid[grid_y, grid_x]
-        wave_height = wave_height_grid[grid_y, grid_x]
-        wave_period = wave_period_grid[grid_y, grid_x]
-        
-        # 静水阻力计算
-        static_resistance = calculate_clame_resistance(speed, ...)  # 填充船舶参数
-        
-        # 风浪附加阻力
-        wind_res = wind_resistance(u=wind_speed, v=0, heading=heading, ship_speed=speed, At=..., mode_input='Heavy Ballast, Cranes')
-        wave_res = wave_resistance(Lpp=..., B=..., T=wave_period, Vs=speed, Vg=0, C_B=..., kyy=..., T_F=..., T_A=..., heading=heading, wave_direction=0, Hs=wave_height)
-        
-        # 计算总阻力和失速率
-        total_resistance = static_resistance + wind_res + wave_res
-        stall_rate = total_resistance / speed
-        stall_rates.append(stall_rate)
-    
-    return stall_rates
+    # 1. 将船速从节 (knots) 转换为米/秒 (m/s)
+    speed_mps = row['speed'] * 0.514444  # 转换公式：1 节 = 0.514444 米/秒
 
-# 6. 可视化失速率
-def visualize_stall_rate(route_data, stall_rates):
-    plt.figure(figsize=(10, 6))
-    plt.plot(route_data['datetime'], stall_rates, label='Stall Rate')
-    plt.xlabel('Time')
-    plt.ylabel('Stall Rate')
-    plt.title('Stall Rate along the Route')
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+    # 2. 计算静水阻力
+    R_calm = calculate_clame_resistance(Lpp, B, T, speed_mps,C_B)  # 使用转换后的船速
 
-# 7. 主程序
-def main(wind_file, wave_file, route_file, lon_min, lon_max, lat_min, lat_max, resolution=0.1):
-    # 创建WGS84网格
-    lon_grid, lat_grid = create_wgs84_grid(lon_min, lon_max, lat_min, lat_max, resolution)
-    
-    # 读取风浪数据
-    times, lon, lat, wind_speed, wave_height, wave_period = read_wind_wave_data(wind_file, wave_file)
-    
-    # 读取船舶航迹数据
-    route_data = read_ship_route(route_file)
-    
-    stall_rates = []
-    
-    # 逐条船舶航迹数据，提取对应的风浪数据，并计算失速率
-    for timestamp in route_data['datetime']:
-        # 根据时间和经纬度提取风浪数据
-        wind_speed_grid, wave_height_grid, wave_period_grid = extract_wind_wave_for_time(
-            lon, lat, wind_speed, wave_height, wave_period, times, timestamp, lon_grid, lat_grid)
-        
-        # 计算失速率
-        stall_rate = calculate_stall_rate(route_data, lon_grid, lat_grid, wind_speed_grid, wave_height_grid, wave_period_grid)
-        stall_rates.append(stall_rate)
-    
-    # 可视化失速率
-    visualize_stall_rate(route_data, stall_rates)
+    # 3. 计算风阻力
+    wind_res = wind_resistance(
+        row['wind_u'],  # wind_u 列对应 u
+        row['wind_v'],  # wind_v 列对应 v
+        row['heading'],  # 传递 heading
+        speed_mps,  # 使用转换后的船速
+        mode_input,  # 传递载重状态
+        B,  # 型宽
+        T  # 吃水深度
+    )
 
-# 执行主程序
-if __name__ == "__main__":
-    wind_file = 'wind_data.nc'   # 风速数据文件
-    wave_file = 'wave_data.nc'   # 波浪数据文件
-    route_file = 'ship_route.csv' # 船舶航迹数据文件
-    lon_min, lon_max, lat_min, lat_max = 120, 130, 30, 40  # 经度和纬度范围
-    main(wind_file, wave_file, route_file, lon_min, lon_max, lat_min, lat_max)
+    # 4. 计算波浪阻力
+    if row['wave_period'] is None or row['wave_height'] is None or row['wave_direction'] is None:
+        raise ValueError("输入的CSV数据缺少波浪相关列（如wave_period, wave_height, wave_direction）")
+
+    T_F = T  # 使用船舶吃水深度T作为前垂线的吃水
+    T_A = T  # 使用船舶吃水深度T作为后垂线的吃水
+    T_min = data['wave_period'].min() #获取最小周期
+    T_max = data['wave_period'].max() #获取最大波浪周期
+
+    #print(
+        #f"T_F: {T_F}, T_A: {T_A}, wave_period: {row['wave_period']}, wave_height: {row['wave_height']}, wave_direction: {row['wave_direction']},T_min: {T_min}")
+
+    wave_res = wave_resistance_spectrum(
+        Lpp,
+        B,
+        speed_mps,  # 使用转换后的船速
+        T,  # D（深度）
+        T_F,
+        T_A,
+        C_B,
+        row['wave_period'],
+        T_min,
+        T_max,
+        DWT,  # 载重吨
+        row['wave_height'],  # 传递 Hs（显著波高）
+        row['wave_direction'],  # 传递波浪方向
+        row['heading'],  # 传递航向 heading
+
+    )
+
+    # 5. 计算总阻力
+    R_total = R_calm + wind_res + (wave_res)
+    #print(f"R_total: {R_total}")
+
+    # 6. 使用直接功率法计算修正后的船速
+    n = row['rpm']  # 从CSV文件的rpm列获取主机转速
+    Vs, Vsc = propeller(R_total, Cp, speed_mps, Lpp, B, T, DWT, D_P, n, R_calm, C_B)
+
+    # 7. 计算失速系数，假设失速系数为修正速度与最大理论速度的比值
+    stall_factor = Vsc / Vs
+
+    # 8. 计算 L/λ（波长计算）
+    wavelength = (g * row['wave_period'] ** 2) / (2 * np.pi)  # 计算波长 λ
+    L_over_lambda = Lpp / wavelength  # 计算 L/λ
+
+    return pd.Series([Vs, Vsc, stall_factor, L_over_lambda, wave_res],
+                     index=['original_speed', 'corrected_speed', 'stall_factor', 'L_over_lambda', 'wave_res'])
+
+
+# 对每一行数据应用计算过程，并将结果作为新列加入data中
+data[['original_speed', 'corrected_speed', 'stall_factor', 'L_over_lambda', 'wave_res']] = data.apply(
+    lambda row: process_data(row, DWT, B, T, Lpp, Cp, D_P, mode_input, C_B), axis=1)
+
+# 输出部分结果
+print(data[['timestamp', 'Lat', 'Long', 'heading', 'speed', 'corrected_speed', 'stall_factor']])
+
+# 保存计算结果到新CSV文件
+data.to_csv('corrected_speeds_and_stall_factors_3.csv', index=False)
+
+
+
+
